@@ -43,18 +43,6 @@ def parse_common_args(parser: ArgumentParser):
         default=False,
     )
     parser.add_argument(
-        "--project-id",
-        type=str,
-        default=None,
-        help="Project ID to use for Anthropic",
-    )
-    parser.add_argument(
-        "--region",
-        type=str,
-        default=None,
-        help="Region to use for Anthropic",
-    )
-    parser.add_argument(
         "--context-manager",
         type=str,
         default="file-based",

@@ -1,4 +1,4 @@
-"""LLM client for Anthropic models."""
+"""LLM client for OpenAI-compatible models including DeepSeek."""
 
 import json
 import os
@@ -33,12 +33,22 @@ from ii_agent.llm.base import (
 
 
 class OpenAIDirectClient(LLMClient):
-    """Use OpenAI models via first party API."""
+    """Use OpenAI-compatible models via API."""
 
-    def __init__(self, model_name: str, max_retries=2, cot_model: bool = True):
-        """Initialize the OpenAI first party client."""
-        api_key = os.getenv("OPENAI_API_KEY", "EMPTY")
-        base_url = os.getenv("OPENAI_BASE_URL", "http://0.0.0.0:2323")
+    def __init__(self, model_name: str, max_retries=2, cot_model: bool = None, **kwargs):
+        """Initialize the OpenAI-compatible client."""
+        # Auto-detect DeepSeek models
+        is_deepseek = "deepseek" in model_name.lower()
+        
+        if is_deepseek:
+            # Use DeepSeek API configuration
+            api_key = os.getenv("DEEPSEEK_API_KEY", os.getenv("OPENAI_API_KEY", "EMPTY"))
+            base_url = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
+        else:
+            # Use standard OpenAI configuration
+            api_key = os.getenv("OPENAI_API_KEY", "EMPTY")
+            base_url = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+            
         self.client = openai.OpenAI(
             api_key=api_key,
             base_url=base_url,
@@ -46,7 +56,16 @@ class OpenAIDirectClient(LLMClient):
         )
         self.model_name = model_name
         self.max_retries = max_retries
-        self.cot_model = cot_model
+        
+        # Auto-detect CoT model if not specified
+        if cot_model is None:
+            self.cot_model = "deepseek-r1" in model_name.lower() or "o1" in model_name.lower() or "deepseek-reasoner" in model_name.lower()
+        else:
+            self.cot_model = cot_model
+            
+        self.is_deepseek = is_deepseek
+        # Check if model supports function calling
+        self.supports_function_calling = not ("deepseek-reasoner" in model_name.lower() or "deepseek-r1" in model_name.lower())
 
     def generate(
         self,
@@ -67,39 +86,64 @@ class OpenAIDirectClient(LLMClient):
             temperature: The temperature.
             tools: A list of tools.
             tool_choice: A tool choice.
+            thinking_tokens: Not used directly but can influence prompting for DeepSeek
 
         Returns:
             A generated response.
         """
-        assert thinking_tokens is None, "Not implemented for OpenAI"
+        # Limit max_tokens for DeepSeek models
+        if self.is_deepseek and max_tokens > 8192:
+            print(f"Warning: max_tokens {max_tokens} exceeds DeepSeek limit of 8192, capping to 8192")
+            max_tokens = 8192
+            
+        # For DeepSeek R1, we might want to add thinking prompts
+        if self.is_deepseek and thinking_tokens and thinking_tokens > 0:
+            # Add a hint to encourage longer reasoning
+            if messages and messages[-1]:
+                last_message = messages[-1][0]
+                if isinstance(last_message, TextPrompt):
+                    last_message.text = f"{last_message.text}\n\nPlease think step by step in detail before providing your answer."
 
         # Turn GeneralContentBlock into OpenAI message format
         openai_messages = []
         if system_prompt is not None:
             if self.cot_model:
-                raise NotImplementedError("System prompt not supported for cot model")
-            system_message = {"role": "system", "content": system_prompt}
-            openai_messages.append(system_message)
+                # For DeepSeek R1, incorporate system prompt into user message instead
+                if messages and messages[0] and isinstance(messages[0][0], TextPrompt):
+                    messages[0][0].text = f"{system_prompt}\n\n{messages[0][0].text}"
+            else:
+                system_message = {"role": "system", "content": system_prompt}
+                openai_messages.append(system_message)
+                
         for idx, message_list in enumerate(messages):
             if len(message_list) > 1:
                 raise ValueError("Only one entry per message supported for openai")
             internal_message = message_list[0]
             if str(type(internal_message)) == str(TextPrompt):
                 internal_message = cast(TextPrompt, internal_message)
-                message_content = {"type": "text", "text": internal_message.text}
-                openai_message = {"role": "user", "content": [message_content]}
+                # For DeepSeek models, use simple string content instead of structured format
+                if self.is_deepseek:
+                    openai_message = {"role": "user", "content": internal_message.text}
+                else:
+                    message_content = {"type": "text", "text": internal_message.text}
+                    openai_message = {"role": "user", "content": [message_content]}
             elif str(type(internal_message)) == str(TextResult):
                 internal_message = cast(TextResult, internal_message)
-                message_content = {"type": "text", "text": internal_message.text}
-                openai_message = {"role": "assistant", "content": [message_content]}
+                # For DeepSeek models, use simple string content instead of structured format
+                if self.is_deepseek:
+                    openai_message = {"role": "assistant", "content": internal_message.text}
+                else:
+                    message_content = {"type": "text", "text": internal_message.text}
+                    openai_message = {"role": "assistant", "content": [message_content]}
             elif str(type(internal_message)) == str(ToolCall):
                 internal_message = cast(ToolCall, internal_message)
+                # Convert tool_input dict to JSON string for OpenAI API
                 tool_call = {
                     "type": "function",
                     "id": internal_message.tool_call_id,
                     "function": {
                         "name": internal_message.tool_name,
-                        "arguments": internal_message.tool_input,
+                        "arguments": json.dumps(internal_message.tool_input),
                     },
                 }
                 openai_message = {
@@ -143,7 +187,9 @@ class OpenAIDirectClient(LLMClient):
                 "description": tool.description,
                 "parameters": tool.input_schema,
             }
-            tool_def["parameters"]["strict"] = True
+            # DeepSeek may not support strict mode
+            if not self.is_deepseek:
+                tool_def["parameters"]["strict"] = True
             openai_tool_object = {
                 "type": "function",
                 "function": tool_def,
@@ -156,17 +202,23 @@ class OpenAIDirectClient(LLMClient):
                 extra_body = {}
                 openai_max_tokens = max_tokens
                 openai_temperature = temperature
+                
+                # Adjust parameters for CoT models
                 if self.cot_model:
                     extra_body["max_completion_tokens"] = max_tokens
                     openai_max_tokens = OpenAI_NOT_GIVEN
-                    openai_temperature = OpenAI_NOT_GIVEN
+                    # For DeepSeek R1, use a higher temperature for better reasoning
+                    if self.is_deepseek:
+                        openai_temperature = 0.6 if temperature == 0.0 else temperature
+                    else:
+                        openai_temperature = OpenAI_NOT_GIVEN
 
                 response = self.client.chat.completions.create(  # type: ignore
                     model=self.model_name,
                     messages=openai_messages,
                     temperature=openai_temperature,
-                    tools=openai_tools if len(openai_tools) > 0 else OpenAI_NOT_GIVEN,
-                    tool_choice=tool_choice_param,  # type: ignore
+                    tools=openai_tools if len(openai_tools) > 0 and self.supports_function_calling else OpenAI_NOT_GIVEN,
+                    tool_choice=tool_choice_param if len(openai_tools) > 0 and self.supports_function_calling else OpenAI_NOT_GIVEN,  # type: ignore
                     max_tokens=openai_max_tokens,
                     extra_body=extra_body,
                 )
@@ -202,7 +254,8 @@ class OpenAIDirectClient(LLMClient):
 
         if tool_calls:
             if len(tool_calls) > 1:
-                raise ValueError("Only one tool call supported for OpenAI")
+                # For now, only process the first tool call due to ii-agent architecture limitations
+                print(f"Warning: Model returned {len(tool_calls)} tool calls, but only the first one will be processed")
             tool_call = tool_calls[0]
             try:
                 # Parse the JSON string into a dictionary

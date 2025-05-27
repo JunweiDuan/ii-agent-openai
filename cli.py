@@ -30,7 +30,7 @@ from ii_agent.llm.context_manager.standard import StandardContextManager
 from ii_agent.llm.token_counter import TokenCounter
 from ii_agent.db.manager import DatabaseManager
 
-MAX_OUTPUT_TOKENS_PER_TURN = 32768
+MAX_OUTPUT_TOKENS_PER_TURN = 8192  # DeepSeek API limit
 MAX_TURNS = 200
 
 
@@ -93,11 +93,8 @@ async def async_main():
 
     # Initialize LLM client
     client = get_client(
-        "anthropic-direct",
+        "deepseek",
         model_name=DEFAULT_MODEL,
-        use_caching=False,
-        project_id=args.project_id,
-        region=args.region,
     )
 
     # Initialize workspace manager with the session-specific workspace

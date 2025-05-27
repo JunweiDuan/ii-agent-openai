@@ -53,7 +53,7 @@ from ii_agent.db.manager import DatabaseManager
 from ii_agent.tools import get_system_tools
 from ii_agent.prompts.system_prompt import SYSTEM_PROMPT, SYSTEM_PROMPT_WITH_SEQ_THINKING
 
-MAX_OUTPUT_TOKENS_PER_TURN = 32768
+MAX_OUTPUT_TOKENS_PER_TURN = 8192  # DeepSeek API limit
 MAX_TURNS = 200
 
 
@@ -121,11 +121,8 @@ async def websocket_endpoint(websocket: WebSocket):
                 if msg_type == "init_agent":
                     # Initialize LLM client
                     client = get_client(
-                        "anthropic-direct",
+                        "deepseek",
                         model_name=DEFAULT_MODEL,
-                        use_caching=False,
-                        project_id=global_args.project_id,
-                        region=global_args.region,
                         thinking_tokens=content.get("thinking_tokens", 2048),
                     )
 
@@ -324,11 +321,8 @@ async def websocket_endpoint(websocket: WebSocket):
                     files = content.get("files", [])
                     # Initialize LLM client
                     client = get_client(
-                        "anthropic-direct",
+                        "deepseek",
                         model_name=DEFAULT_MODEL,
-                        use_caching=False,
-                        project_id=global_args.project_id,
-                        region=global_args.region,
                         thinking_tokens=0, # Don't need thinking tokens for this
                     )
                     # Call the enhance_prompt function from the module

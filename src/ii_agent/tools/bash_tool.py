@@ -8,6 +8,9 @@ It provides a simple interface for running shell commands and getting their outp
 It also supports command filters for transforming commands before execution.
 """
 
+import os
+import sys
+import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -20,17 +23,28 @@ from ii_agent.tools.base import LLMTool, ToolImplOutput
 
 
 def start_persistent_shell(timeout: int):
-    # Start a new Bash shell
-    child = pexpect.spawn("/bin/bash", encoding="utf-8", echo=False, timeout=timeout)
-    # Set a known, unique prompt
-    # We use a random string that is unlikely to appear otherwise
-    # so we can detect the prompt reliably.
-    custom_prompt = "PEXPECT_PROMPT>> "
-    child.sendline("stty -onlcr")
-    child.sendline("unset PROMPT_COMMAND")
-    child.sendline(f"PS1='{custom_prompt}'")
-    # Force an initial read until the newly set prompt shows up
-    child.expect(custom_prompt)
+    # Start a new shell - use cmd on Windows, bash on Unix
+    if sys.platform == "win32":
+        # On Windows, use pexpect.popen_spawn.PopenSpawn
+        from pexpect.popen_spawn import PopenSpawn
+        shell_cmd = "cmd.exe"
+        child = PopenSpawn(shell_cmd, encoding="utf-8", timeout=timeout)
+        # Set a known, unique prompt for Windows
+        custom_prompt = "PEXPECT_PROMPT> "
+        child.sendline(f"prompt {custom_prompt}")
+        # Wait for the prompt
+        child.expect(custom_prompt)
+    else:
+        # On Unix/Linux/Mac, use the original implementation
+        child = pexpect.spawn("/bin/bash", encoding="utf-8", echo=False, timeout=timeout)
+        # Set a known, unique prompt
+        custom_prompt = "PEXPECT_PROMPT>> "
+        child.sendline("stty -onlcr")
+        child.sendline("unset PROMPT_COMMAND")
+        child.sendline(f"PS1='{custom_prompt}'")
+        # Force an initial read until the newly set prompt shows up
+        child.expect(custom_prompt)
+    
     return child, custom_prompt
 
 
@@ -50,6 +64,37 @@ def run_command(child, custom_prompt, cmd):
         clean_output = clean_output[1:]
 
     return clean_output
+
+
+def run_command_simple(cmd: str, cwd: Optional[Path] = None, timeout: int = 60) -> tuple[str, int]:
+    """Simple command execution fallback for Windows.
+    
+    Args:
+        cmd: Command to execute
+        cwd: Working directory
+        timeout: Command timeout in seconds
+        
+    Returns:
+        Tuple of (output, return_code)
+    """
+    try:
+        # Use shell=True on Windows to handle commands properly
+        result = subprocess.run(
+            cmd,
+            shell=True,
+            capture_output=True,
+            text=True,
+            cwd=cwd,
+            timeout=timeout
+        )
+        output = result.stdout
+        if result.stderr:
+            output += "\n" + result.stderr
+        return output.strip(), result.returncode
+    except subprocess.TimeoutExpired:
+        return "Command timed out", -1
+    except Exception as e:
+        return f"Error executing command: {str(e)}", -1
 
 
 class CommandFilter(ABC):
@@ -200,6 +245,7 @@ Run commands in a bash shell
         command_filters: Optional[List[CommandFilter]] = None,
         timeout: int = 60,
         additional_banned_command_strs: Optional[List[str]] = None,
+        use_simple_fallback: bool = False,
     ):
         """Initialize the BashTool.
 
@@ -207,12 +253,16 @@ Run commands in a bash shell
             workspace_root: Root directory of the workspace
             require_confirmation: Whether to require user confirmation before executing commands
             command_filters: Optional list of command filters to apply before execution
+            timeout: Command timeout in seconds
+            additional_banned_command_strs: Additional commands to ban
+            use_simple_fallback: Force use of simple subprocess execution (useful on Windows)
         """
         super().__init__()
         self.workspace_root = workspace_root
         self.require_confirmation = require_confirmation
         self.command_filters = command_filters or []
         self.timeout = timeout
+        self.use_simple_fallback = use_simple_fallback or sys.platform == "win32"
 
         self.banned_command_strs = [
             "git init",
@@ -222,9 +272,20 @@ Run commands in a bash shell
         if additional_banned_command_strs is not None:
             self.banned_command_strs.extend(additional_banned_command_strs)
 
-        self.child, self.custom_prompt = start_persistent_shell(timeout=timeout)
-        if self.workspace_root:
-            run_command(self.child, self.custom_prompt, f"cd {self.workspace_root}")
+        # Try to initialize persistent shell if not using simple fallback
+        if not self.use_simple_fallback:
+            try:
+                self.child, self.custom_prompt = start_persistent_shell(timeout=timeout)
+                if self.workspace_root:
+                    run_command(self.child, self.custom_prompt, f"cd {self.workspace_root}")
+            except Exception as e:
+                print(f"Failed to start persistent shell, falling back to simple execution: {e}")
+                self.use_simple_fallback = True
+                self.child = None
+                self.custom_prompt = None
+        else:
+            self.child = None
+            self.custom_prompt = None
 
     def add_command_filter(self, command_filter: CommandFilter) -> None:
         """Add a command filter to the filter chain.
@@ -296,33 +357,46 @@ Run commands in a bash shell
                     aux_data | {"success": False, "reason": "User did not confirm"},
                 )
 
-        # confirm no bad stuff happened
-        try:
-            echo_result = run_command(self.child, self.custom_prompt, "echo hello")
-            assert echo_result.strip() == "hello"
-        except Exception:
-            self.child, self.custom_prompt = start_persistent_shell(self.timeout)
-
-        # Execute the command and capture output
-        try:
-            result = run_command(self.child, self.custom_prompt, command)
-        except Exception as e:
-            # self.child, self.custom_prompt = start_persistent_shell(self.timeout)
-            if "Timeout exceeded." in str(e):
+        # Execute the command
+        if self.use_simple_fallback:
+            # Use simple subprocess execution
+            result, return_code = run_command_simple(command, self.workspace_root, self.timeout)
+            if return_code == -1 and "Command timed out" in result:
                 return ToolImplOutput(
                     "Command timed out. Please try again.",
                     "Command timed out. Please try again.",
                     aux_data | {"success": False},
                 )
-            return ToolImplOutput(
-                f"Error executing command: {str(e)}",
-                f"Failed to execute command '{original_command}'",
-                aux_data
-                | {
-                    "success": False,
-                    "error": str(e),
-                },
-            )
+            elif return_code != 0 and return_code != -1:
+                result = f"Command failed with return code {return_code}:\n{result}"
+        else:
+            # Use persistent shell
+            # confirm no bad stuff happened
+            try:
+                echo_result = run_command(self.child, self.custom_prompt, "echo hello")
+                assert echo_result.strip() == "hello"
+            except Exception:
+                self.child, self.custom_prompt = start_persistent_shell(self.timeout)
+
+            # Execute the command and capture output
+            try:
+                result = run_command(self.child, self.custom_prompt, command)
+            except Exception as e:
+                if "Timeout exceeded." in str(e):
+                    return ToolImplOutput(
+                        "Command timed out. Please try again.",
+                        "Command timed out. Please try again.",
+                        aux_data | {"success": False},
+                    )
+                return ToolImplOutput(
+                    f"Error executing command: {str(e)}",
+                    f"Failed to execute command '{original_command}'",
+                    aux_data
+                    | {
+                        "success": False,
+                        "error": str(e),
+                    },
+                )
 
         return ToolImplOutput(
             result,

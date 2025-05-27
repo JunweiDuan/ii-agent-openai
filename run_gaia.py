@@ -411,11 +411,8 @@ def main():
 
     # Initialize LLM client
     client = get_client(
-        "anthropic-direct",
+        "deepseek",
         model_name=DEFAULT_MODEL,
-        use_caching=False,
-        project_id=args.project_id,
-        region=args.region,
         thinking_tokens=2048,
     )
 

@@ -22,11 +22,11 @@ https://github.com/user-attachments/assets/d0eb7440-a6e2-4276-865c-a1055181bb33
 
 ## Overview
 
-II Agent is built around providing an agentic interface to Anthropic Claude models. It offers:
+II Agent is built around providing an agentic interface to advanced reasoning models. It offers:
 
 - A CLI interface for direct command-line interaction
 - A WebSocket server that powers a modern React-based frontend
-- Integration with Google Cloud's Vertex AI for API access to Anthropic models
+- Integration with DeepSeek's OpenAI-compatible API for access to powerful reasoning models
 
 ## Core Capabilities
 
@@ -95,7 +95,7 @@ You can view the full traces of some samples here: [GAIA Benchmark Traces](https
 
 - Python 3.10+
 - Node.js 18+ (for frontend)
-- Google Cloud project with Vertex AI API enabled or Anthropic API key
+- DeepSeek API key
 
 ## Environment
 
@@ -104,6 +104,11 @@ You can view the full traces of some samples here: [GAIA Benchmark Traces](https
 Create a `.env` file in the root directory with the following variables:
 
 ```bash
+# DeepSeek API Configuration
+DEEPSEEK_API_KEY=your_deepseek_api_key
+# Optional: Override the base URL (defaults to https://api.deepseek.com/v1)
+#DEEPSEEK_BASE_URL=https://api.deepseek.com/v1
+
 # Image and Video Generation Tool
 OPENAI_API_KEY=your_openai_key
 OPENAI_AZURE_ENDPOINT=your_azure_endpoint
@@ -115,11 +120,6 @@ TAVILY_API_KEY=your_tavily_key
 #SERPAPI_API_KEY=your_serpapi_key 
 
 STATIC_FILE_BASE_URL=http://localhost:8000/
-
-#If you are using Anthropic client
-ANTHROPIC_API_KEY=
-#If you are using Goolge Vertex (recommended if you have permission extra throughput)
-#GOOGLE_APPLICATION_CREDENTIALS=
 ```
 
 ### Frontend Environment Variables
@@ -150,19 +150,12 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 
 ### Command Line Interface
 
-If you want to use anthropic client, set `ANTHROPIC_API_KEY` in `.env` file and run:
+Set `DEEPSEEK_API_KEY` in `.env` file and run:
 ```bash
 python cli.py 
 ```
 
-If you want to use vertex, set `GOOGLE_APPLICATION_CREDENTIALS` in `.env` file and run:
-```bash
-python cli.py --project-id YOUR_PROJECT_ID --region YOUR_REGION
-```
-
 Options:
-- `--project-id`: Google Cloud project ID
-- `--region`: Google Cloud region (e.g., us-east5)
 - `--workspace`: Path to the workspace directory (default: ./workspace)
 - `--needs-permission`: Require permission before executing commands
 - `--minimize-stdout-logs`: Reduce the amount of logs printed to stdout
@@ -171,16 +164,9 @@ Options:
 
 1. Start the WebSocket server:
 
-When using Anthropic client:
 ```bash
 export STATIC_FILE_BASE_URL=http://localhost:8000
 python ws_server.py --port 8000
-```
-
-When using Vertex:
-```bash
-export STATIC_FILE_BASE_URL=http://localhost:8000
-python ws_server.py --port 8000 --project-id YOUR_PROJECT_ID --region YOUR_REGION
 ```
 
 2. Start the frontend (in a separate terminal):

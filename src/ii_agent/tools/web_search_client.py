@@ -143,7 +143,9 @@ class DuckDuckGoSearchClient(BaseSearchClient):
             raise ImportError(
                 "You must install package `duckduckgo-search` to run this tool: for instance run `pip install duckduckgo-search`."
             ) from e
-        self.ddgs = DDGS(**kwargs)
+        # Filter out 'proxies' from kwargs if present to avoid httpx compatibility issues
+        filtered_kwargs = {k: v for k, v in kwargs.items() if k != 'proxies'}
+        self.ddgs = DDGS(**filtered_kwargs)
 
     def forward(self, query: str) -> str:
         results = self.ddgs.text(query, max_results=self.max_results)
